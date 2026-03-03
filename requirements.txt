@@ -1,0 +1,4 @@
+customtkinter
+mido
+python-rtmidi
+pulsectl
