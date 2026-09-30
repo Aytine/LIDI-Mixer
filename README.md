@@ -49,3 +49,28 @@ On first launch an autostart entry is created in `~/.config/autostart/midi-mixer
 
 Enjoy mixing!
 
+
+## Project layout
+
+```
+main.py                 entry point (single instance, Qt application)
+midi_mixer/
+  constants.py          defaults (ports, APC40 controls, LED colors)
+  midi_utils.py         CC/note keys, message kinds          (pure, no Qt)
+  audio.py              PulseAudio helpers: matching, mute   (pure, no Qt)
+  focus.py              focused X11 window -> app name       (pure, no Qt)
+  config.py             load/save ~/.config/midi-mixer, group defaults
+  autostart.py          XDG autostart entry
+  engine.py             MIDI worker threads, mute/assign/LED logic
+  theme.py              colors, stylesheet, icons
+  widgets.py            volume overlay, group panel/list, mapping row
+  window.py             main window + tray
+tests/                  pytest suite (runs headless)
+```
+
+## Development
+
+```bash
+venv/bin/pip install -r requirements-dev.txt
+venv/bin/python -m pytest
+```
