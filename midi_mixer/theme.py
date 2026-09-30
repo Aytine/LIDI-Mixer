@@ -1,4 +1,6 @@
 """Colors, stylesheet and small painted icons."""
+import os
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 
@@ -12,6 +14,9 @@ BORDER = "#3a3d46"
 MUTED = "#b8bcc8"
 ACCENT = "#3a7ebf"
 
+# Qt stylesheets can only draw an arrow from an image file.
+ARROW_DOWN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "arrow_down.png").replace("\\", "/")
+
 STYLESHEET = f"""
 QMainWindow, QWidget#central {{ background: {BG}; }}
 QWidget {{ color: #e6e8ee; font-size: 13px; }}
@@ -21,7 +26,8 @@ QLineEdit, QComboBox {{
     background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 6px 10px;
 }}
 QLineEdit:focus, QComboBox:focus {{ border-color: {ACCENT}; }}
-QComboBox::drop-down {{ border: none; width: 24px; }}
+QComboBox::drop-down {{ border: none; width: 30px; }}
+QComboBox::down-arrow {{ image: url({ARROW_DOWN}); width: 12px; height: 12px; }}
 QComboBox QAbstractItemView {{
     background: {PANEL}; border: 1px solid {BORDER}; selection-background-color: {ACCENT};
 }}
@@ -51,6 +57,9 @@ QScrollBar::handle:vertical:hover {{ background: #555a66; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QScrollBar:horizontal {{ height: 0; }}
+QToolButton {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 7px 14px; color: white; }}
+QToolButton:hover {{ background: {ACCENT}; }}
+QToolButton::menu-indicator {{ image: none; }}
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{ background: transparent; color: {MUTED}; padding: 8px 16px; border-bottom: 2px solid transparent; }}
 QTabBar::tab:selected {{ color: white; border-bottom-color: {ACCENT}; }}

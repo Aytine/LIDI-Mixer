@@ -1,24 +1,26 @@
 """Main window: tabs, tray icon, wiring between the UI and the engine."""
 import logging
-import uuid
 
 import pulsectl
 from PySide6.QtCore import QSize, Qt, QTimer, Slot
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton,
-    QScrollArea, QStackedWidget, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidgetItem, QMainWindow, QMenu,
+    QMessageBox, QPushButton, QScrollArea, QStackedWidget, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .audio import list_running_apps, set_mute, target_base_name
 from .autostart import is_autostart_enabled, set_autostart
-from .config import default_group, load_config, save_config
-from .constants import APP_NAME, ASSIGN_COLORS, DEFAULT_ASSIGN_COLOR, DEFAULT_GROUP_COUNT, DEFAULT_PORT_HINT, NO_PORT_LABEL, PORT_POLL_MS
+from .config import (
+    GENERIC_TEMPLATE, bootstrap, bundled_templates, create_profile, delete_profile, duplicate_profile,
+    export_profile, import_profile, list_profiles, load_profile, save_profile, save_settings,
+)
+from .constants import APP_NAME, NO_PORT_LABEL, PORT_POLL_MS
 from .engine import MixerEngine
 from .focus import XLIB_AVAILABLE, focused_app_name
 from .midi_utils import format_key, input_port_names, mapping_key, parse_cc_field
-from .theme import dot_icon, make_app_icon
-from .widgets import GroupList, GroupRow, MappingRow, NoScrollComboBox, VolumeOverlay
+from .theme import GREEN, dot_icon, make_app_icon
+from .widgets import GroupList, GroupRow, MappingRow, NoScrollComboBox, ProfileBar, VolumeOverlay
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +28,10 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     def __init__(self, start_hidden: bool):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} - APC40")
         self.resize(1020, 660)
         self.icon = make_app_icon()
         self.setWindowIcon(self.icon)
 
-        self.cfg = load_config()
         self._pulse = None
         self._ports = None
         self._apps = ["MASTER"]
@@ -54,28 +54,26 @@ class MainWindow(QMainWindow):
 
         self.overlay = VolumeOverlay()
 
+        # Active profile: what the controller is and what the user configured for it.
+        self.settings, self.profile_id = bootstrap(input_port_names())
+        self.profile = load_profile(self.profile_id)
+
         self._build_ui()
         self._build_tray()
 
         # Keep the autostart entry in line with the saved preference (on by default).
-        if self.cfg["autostart"] != is_autostart_enabled():
+        if self.settings["autostart"] != is_autostart_enabled():
             try:
-                set_autostart(self.cfg["autostart"])
+                set_autostart(self.settings["autostart"])
             except OSError as e:
                 logger.error("Autostart: %s", e)
         self.act_autostart.setChecked(is_autostart_enabled())
 
         self._refresh_apps()
-        for key, app in self.cfg["mappings"].items():
-            self._add_row(format_key(key), app)
-        self.engine.mappings = dict(self.cfg["mappings"])
-        for group in self.cfg["groups"]:
-            self._add_group_row(group)
-        self.engine.set_groups([dict(g) for g in self.cfg["groups"]])
-        if self.group_rows:
-            self.group_list.setCurrentRow(0)
-
-        self._refresh_ports()
+        self._rebuild_profile_lists()
+        self._load_profile_ui()
+        self._refresh_ports(force=True)
+        self._maybe_switch_profile(self._ports)
         self.port_timer = QTimer(self)
         self.port_timer.timeout.connect(self._poll)
         self.port_timer.start(PORT_POLL_MS)
@@ -95,10 +93,16 @@ class MainWindow(QMainWindow):
         root.setSpacing(10)
 
         top = QHBoxLayout()
+        top.setSpacing(12)
+        self.profile_bar = ProfileBar()
+        self.profile_bar.profileSelected.connect(self._switch_profile)
+        self.profile_bar.actionRequested.connect(self._on_profile_action)
         self.port_combo = NoScrollComboBox()
-        self.port_combo.currentIndexChanged.connect(self._on_port_changed)
+        self.port_combo.setToolTip("Port MIDI du contrôleur")
+        self.port_combo.activated.connect(self._on_port_activated)
         self.btn_refresh = QPushButton("Rafraîchir les applications")
         self.btn_refresh.clicked.connect(self._refresh_apps)
+        top.addWidget(self.profile_bar)
         top.addWidget(self.port_combo, 1)
         top.addWidget(self.btn_refresh)
         root.addLayout(top)
@@ -203,8 +207,11 @@ class MainWindow(QMainWindow):
         self.act_autostart.toggled.connect(self._on_autostart_toggled)
         act_quit = QAction("Quitter", menu)
         act_quit.triggered.connect(self._quit)
+        self.tray_profiles = QMenu("Profil", menu)
+        self._profile_actions = None
         menu.addAction(act_open)
         menu.addAction(self.act_toggle)
+        menu.addMenu(self.tray_profiles)
         menu.addSeparator()
         menu.addAction(self.act_autostart)
         menu.addSeparator()
@@ -253,12 +260,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def _quit(self):
         self._quitting = True
-        # Pulse keeps the mute flag after we exit (notably on the MASTER sink): restore the sound.
-        for g in list(self.engine.groups):
-            if g["uid"] in self.engine.muted:
-                self._unmute(g["uid"], g.get("app", ""))
-        self.engine.stop()
         self._apply_live()
+        self._release_controller()
         self.tray.hide()
         if self._pulse is not None:
             try:
@@ -277,8 +280,8 @@ class MainWindow(QMainWindow):
             self.act_autostart.setChecked(is_autostart_enabled())
             self.act_autostart.blockSignals(False)
             return
-        self.cfg["autostart"] = enabled
-        save_config(self.cfg)
+        self.settings["autostart"] = enabled
+        save_settings(self.settings)
 
     # -- audio apps --------------------------------------------------------
 
@@ -347,7 +350,7 @@ class MainWindow(QMainWindow):
         for row in self.group_rows:
             group = {"uid": row.uid, "name": row.name.text().strip(), "app": row.app.currentText().strip(),
                      "color": row.color.currentText()}
-            for field, label, _kind, _msg in GroupRow.FIELDS:
+            for field, label, _prefix, _kind in row.fields_spec:
                 text = row.fields[field].text()
                 parsed = parse_cc_field(text) if text else None
                 if text and parsed is None:
@@ -376,17 +379,19 @@ class MainWindow(QMainWindow):
         self._refresh_group_items()
         mappings, _ = self._collect_rows()
         groups, _ = self._collect_groups()
-        old_apps = {g["uid"]: g.get("app", "") for g in self.cfg["groups"]}
+        old_apps = {g["uid"]: g.get("app", "") for g in self.profile.groups}
         for g in groups:
             if g["uid"] in self.engine.muted and old_apps.get(g["uid"], g["app"]) != g["app"]:
                 self._unmute(g["uid"], old_apps[g["uid"]])
         self.engine.mappings = mappings
         self.engine.set_groups(groups)
-        self.cfg["mappings"] = mappings
-        self.cfg["groups"] = groups
-        self.cfg["port"] = self.port_combo.currentData()
+        self.profile.mappings = mappings
+        self.profile.groups = groups
+        self._save_profile()
+
+    def _save_profile(self):
         try:
-            save_config(self.cfg)
+            save_profile(self.profile_id, self.profile)
         except OSError as e:
             logger.error("Sauvegarde impossible : %s", e)
 
@@ -404,7 +409,7 @@ class MainWindow(QMainWindow):
     # -- groups ------------------------------------------------------------
 
     def _add_group_row(self, group: dict, user: bool = False):
-        row = GroupRow(group, self._apps)
+        row = GroupRow(group, self._apps, self.profile)
         row.changed.connect(self._apply_live)
         row.learnRequested.connect(self._on_group_learn_requested)
         row.removeRequested.connect(self._on_group_remove_requested)
@@ -437,7 +442,8 @@ class MainWindow(QMainWindow):
             name = row.name.text().strip() or f"Groupe {i + 1}"
             app = row.app.currentText().strip()
             item.setText(f"{name}\n{app or 'non assigné'}")
-            item.setIcon(dot_icon(ASSIGN_COLORS[row.color.currentText()][1] if app else "#5c6070"))
+            color = (self.profile.color_hex(row.color.currentText()) or GREEN) if app else "#5c6070"
+            item.setIcon(dot_icon(color))
 
     @Slot(int)
     def _on_group_selected(self, index: int):
@@ -466,20 +472,8 @@ class MainWindow(QMainWindow):
         self._on_groups_reordered()
 
     def _new_group(self) -> dict:
-        """Next free APC40 column's default controls, or an unbound group if all 8 are taken."""
-        groups = self._collect_groups()[0]
-        used = {g["volume"] for g in groups}
-        names = {g["name"] for g in groups}
-        n = 1
-        while f"Groupe {n}" in names:
-            n += 1
-        for i in range(DEFAULT_GROUP_COUNT):
-            group = default_group(i)
-            if group["volume"] not in used:
-                group["name"] = f"Groupe {n}"
-                return group
-        return {"uid": uuid.uuid4().hex[:8], "name": f"Groupe {n}", "app": "", "volume": "",
-                "mute": "", "assign": "", "color": DEFAULT_ASSIGN_COLOR}
+        """Next free position of the profile's layout, or an unbound group when the layout is full."""
+        return self.profile.new_group(self._collect_groups()[0])
 
     @Slot(object)
     def _on_group_remove_requested(self, row):
@@ -581,48 +575,56 @@ class MainWindow(QMainWindow):
 
     # -- ports / mixer state -----------------------------------------------
 
-    @staticmethod
-    def _default_port(ports, preferred=None):
-        """Preferred/saved port if present, otherwise the APC40, otherwise the first port."""
+    def _default_port(self, ports, preferred=None):
+        """Preferred/saved port if present, otherwise one matching the profile's hint, otherwise the first port."""
         if preferred in ports:
             return preferred
         for p in ports:
-            if DEFAULT_PORT_HINT in p.lower():
+            if self.profile.matches_port(p):
                 return p
         return ports[0] if ports else None
 
-    def _refresh_ports(self):
+    def _refresh_ports(self, force: bool = False):
         ports = input_port_names()
-        if ports == self._ports:
+        changed = ports != self._ports
+        if not (changed or force):
             return
         self._ports = ports
-        current = self.port_combo.currentData() or self.cfg["port"]
+        preferred = self.profile.port if force else (self.port_combo.currentData() or self.profile.port)
         self.port_combo.blockSignals(True)
         self.port_combo.clear()
         if ports:
             for p in ports:
                 self.port_combo.addItem(p, p)
-            self.port_combo.setCurrentIndex(self.port_combo.findData(self._default_port(ports, current)))
+            self.port_combo.setCurrentIndex(self.port_combo.findData(self._default_port(ports, preferred)))
         else:
             self.port_combo.addItem(NO_PORT_LABEL, None)
         self.port_combo.blockSignals(False)
         self._update_status()
+        if changed and not force:
+            self._maybe_switch_profile(ports)
 
     @Slot()
     def _poll(self):
-        """Every few seconds: refresh the audio apps, watch for the controller being (un)plugged and autostart for the APC40."""
+        """Every few seconds: refresh the audio apps, watch for controllers being (un)plugged, autostart."""
         self._refresh_ports()
         self._refresh_apps()
         self._maybe_autostart()
 
     @Slot(int)
-    def _on_port_changed(self, _index):
-        self._apply_live()
+    def _on_port_activated(self, _index):
+        """The user picked a port: remember it for this profile."""
+        self.profile.port = self.port_combo.currentData()
+        self._save_profile()
         self._update_status()
 
+    def _port_belongs_to(self, profile, port) -> bool:
+        return bool(port) and (port == profile.port or profile.matches_port(port))
+
     def _maybe_autostart(self):
+        """Start the mixer by itself when the profile's own controller is there (saved port or name hint)."""
         port = self.port_combo.currentData()
-        if (port and DEFAULT_PORT_HINT in port.lower()
+        if (self._port_belongs_to(self.profile, port)
                 and not self.engine.running and not self._user_stopped):
             self._start_mixer(interactive=False)
 
@@ -632,6 +634,8 @@ class MainWindow(QMainWindow):
             if interactive:
                 QMessageBox.warning(self, "MIDI", "Aucun port MIDI sélectionné")
             return False
+        if interactive:
+            self.profile.port = port   # a manual start remembers the port, so the next launch can autostart
         _, invalid = self._collect_rows()
         _, invalid_groups = self._collect_groups()
         if (invalid or invalid_groups) and interactive:
@@ -669,7 +673,173 @@ class MainWindow(QMainWindow):
         port = self.port_combo.currentData()
         text = f"Actif — {port}" if self.engine.running else "Mixer arrêté"
         self.status.setText(text)
-        self.tray.setToolTip(f"{APP_NAME} — {text}")
+        self.tray.setToolTip(f"{APP_NAME} ({self.profile.name}) — {text}")
+
+    # -- profiles ------------------------------------------------------------
+
+    def _rebuild_profile_lists(self):
+        """Refresh the profile selector and the tray submenu."""
+        profiles = list_profiles()
+        self.profile_bar.set_profiles(profiles, self.profile_id)
+        self.tray_profiles.clear()
+        if self._profile_actions is not None:
+            self._profile_actions.deleteLater()
+        self._profile_actions = QActionGroup(self)
+        for pid, name in profiles:
+            action = self.tray_profiles.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(pid == self.profile_id)
+            self._profile_actions.addAction(action)
+            action.triggered.connect(lambda _checked=False, p=pid: self._switch_profile(p))
+
+    def _clear_rows(self):
+        """Remove every mapping row and group panel (their widgets belong to the previous profile)."""
+        self.engine.cancel_learning()
+        for row in self.rows:
+            self.rows_layout.removeWidget(row)
+            row.deleteLater()
+        self.rows = []
+        for row in self.group_rows:
+            self.group_stack.removeWidget(row)
+            row.deleteLater()
+        self.group_rows = []
+        self.group_list.clear()
+
+    def _load_profile_ui(self):
+        """Show the active profile: title, mapping rows, group panels; hand its description to the engine."""
+        self.engine.profile = self.profile
+        self._clear_rows()
+        self.setWindowTitle(f"{APP_NAME} — {self.profile.name}")
+        for key, app in self.profile.mappings.items():
+            self._add_row(format_key(key), app)
+        self.engine.mappings = dict(self.profile.mappings)
+        for group in self.profile.groups:
+            self._add_group_row(group)
+        self.engine.set_groups([dict(g) for g in self.profile.groups])
+        if self.group_rows:
+            self.group_list.setCurrentRow(0)
+
+    def _release_controller(self):
+        """Give the sound back and switch the controller's LEDs off, then stop listening."""
+        for g in list(self.engine.groups):
+            if g["uid"] in self.engine.muted:
+                self._unmute(g["uid"], g.get("app", ""))
+        self.engine.set_groups([])   # switches the group LEDs off
+        self.engine.stop()
+
+    @Slot(str)
+    def _switch_profile(self, pid: str, persist_current: bool = True):
+        if not pid or pid == self.profile_id:
+            return
+        new = load_profile(pid)
+        if new is None:
+            self._on_error("Profil introuvable ou illisible.")
+            self._rebuild_profile_lists()
+            return
+        if persist_current:
+            self._apply_live()
+        self._release_controller()
+        self.profile_id, self.profile = pid, new
+        self.settings["active_profile"] = pid
+        save_settings(self.settings)
+        self._load_profile_ui()
+        self._user_stopped = False
+        self._rebuild_profile_lists()
+        self._refresh_ports(force=True)
+        self._maybe_autostart()
+
+    def _maybe_switch_profile(self, ports):
+        """If the active profile's controller is absent but another profile's controller is plugged, switch to it."""
+        if self.engine.running or self._user_stopped or not ports:
+            return
+        if any(self._port_belongs_to(self.profile, p) for p in ports):
+            return
+        for pid, _name in list_profiles():
+            other = load_profile(pid) if pid != self.profile_id else None
+            if other is not None and any(self._port_belongs_to(other, p) for p in ports):
+                self._switch_profile(pid)
+                return
+
+    @Slot(str)
+    def _on_profile_action(self, action: str):
+        """Menu "Gérer": ask the user what is needed, then call the matching method."""
+        if action == "new":
+            templates = bundled_templates()
+            labels = [data.get("name", tid) for tid, data in templates.items()]
+            name, ok = QInputDialog.getText(self, "Nouveau profil", "Nom du profil :")
+            if not ok or not name.strip():
+                return
+            label, ok = QInputDialog.getItem(self, "Nouveau profil", "Modèle de contrôleur :", labels, 0, False)
+            if ok:
+                self._create_profile(name.strip(), list(templates)[labels.index(label)])
+        elif action == "duplicate":
+            name, ok = QInputDialog.getText(self, "Dupliquer le profil", "Nom de la copie :",
+                                            text=f"{self.profile.name} (copie)")
+            if ok and name.strip():
+                self._duplicate_profile(name.strip())
+        elif action == "rename":
+            name, ok = QInputDialog.getText(self, "Renommer le profil", "Nouveau nom :", text=self.profile.name)
+            if ok and name.strip():
+                self._rename_profile(name.strip())
+        elif action == "delete":
+            answer = QMessageBox.question(self, "Supprimer le profil",
+                                          f"Supprimer le profil « {self.profile.name} » et ses réglages ?")
+            if answer == QMessageBox.Yes:
+                self._delete_profile()
+        elif action == "import":
+            path, _ = QFileDialog.getOpenFileName(self, "Importer un profil", "", "Profils (*.json)")
+            if path:
+                self._import_profile(path)
+        elif action == "export":
+            path, _ = QFileDialog.getSaveFileName(self, "Exporter le profil", f"{self.profile.name}.json",
+                                                  "Profils (*.json)")
+            if path:
+                self._export_profile(path)
+
+    def _create_profile(self, name: str, template_id: str = GENERIC_TEMPLATE) -> str:
+        self._apply_live()
+        pid = create_profile(name, template_id)
+        self._switch_profile(pid, persist_current=False)
+        return pid
+
+    def _duplicate_profile(self, name: str) -> str:
+        self._apply_live()
+        pid = duplicate_profile(self.profile, name)
+        self._switch_profile(pid, persist_current=False)
+        return pid
+
+    def _rename_profile(self, name: str):
+        self.profile.name = name
+        self._save_profile()
+        self.setWindowTitle(f"{APP_NAME} — {name}")
+        self._rebuild_profile_lists()
+        self._update_status()
+
+    def _delete_profile(self) -> bool:
+        """Delete the active profile (never the last one) and switch to another."""
+        others = [pid for pid, _name in list_profiles() if pid != self.profile_id]
+        if not others:
+            return False
+        deleted = self.profile_id
+        self._switch_profile(others[0], persist_current=False)
+        delete_profile(deleted)
+        self._rebuild_profile_lists()
+        return True
+
+    def _import_profile(self, path: str):
+        try:
+            pid = import_profile(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Importer un profil", str(e))
+            return
+        self._switch_profile(pid)
+
+    def _export_profile(self, path: str):
+        self._apply_live()
+        try:
+            export_profile(self.profile, path)
+        except OSError as e:
+            QMessageBox.warning(self, "Exporter le profil", str(e))
 
     # -- engine feedback ---------------------------------------------------
 

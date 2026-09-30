@@ -26,6 +26,15 @@ def qapp():
     return app
 
 
+@pytest.fixture
+def apc_profile():
+    """The bundled APC40 mkII template (toggle note buttons, note LEDs with a color palette)."""
+    from midi_mixer.config import bundled_templates
+    from midi_mixer.profile import Profile
+
+    return Profile.from_template(bundled_templates()["apc40_mk2"])
+
+
 class FakeStream:
     """Minimal stand-in for a pulsectl sink input."""
 

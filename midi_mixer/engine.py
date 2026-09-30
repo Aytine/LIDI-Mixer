@@ -8,8 +8,9 @@ import pulsectl
 from PySide6.QtCore import QObject, Signal
 
 from .audio import display_name, set_mute, si_matches_target
-from .constants import ASSIGN_COLORS, DEFAULT_ASSIGN_COLOR, DEFAULT_PORT_HINT, LEARN_TIMEOUT_S
+from .constants import LEARN_TIMEOUT_S
 from .midi_utils import key_channel_number, key_matches, mapping_key, midi_number, msg_kind
+from .profile import Profile
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,9 @@ class MixerEngine(QObject):
 
     def __init__(self):
         super().__init__()
+        self.profile = Profile()  # how this controller's buttons and LEDs behave; set by the window
         self.mappings = {}
-        self.groups = []      # list of group dicts (see default_group)
+        self.groups = []      # list of group dicts (see Profile.make_group)
         self.muted = set()    # uids of muted groups
         self.running = False
         self._thread = None
@@ -64,33 +66,43 @@ class MixerEngine(QObject):
     # -- mute button LEDs ----------------------------------------------------
 
     def _open_output(self, port: str):
-        """Open the MIDI output matching input `port` (same device), or None."""
+        """Open the MIDI output of the same device as input `port`, or None (no LEDs on this profile / no output)."""
+        if not self.profile.has_leds:
+            return None
         try:
             names = mido.get_output_names()
-            name = port if port in names else next((n for n in names if DEFAULT_PORT_HINT in n.lower()), None)
+            name = port if port in names else next((n for n in names if self.profile.matches_port(n)), None)
             return mido.open_output(name) if name else None
         except Exception as e:
             logger.error("Sortie MIDI indisponible (LED désactivées) : %s", e)
             return None
 
-    def _send_led(self, key: str, on: bool, velocity: int = 127):
+    def _send_led(self, key: str, on: bool, velocity: int = None):
+        """Light (`velocity` or the profile's plain 'on' value) or switch off the LED of the button at `key`."""
+        leds = self.profile.leds
         target = key_channel_number(key) if key else None
-        if target is None or self._out is None:
+        if not leds or target is None or self._out is None:
             return
+        value = (leds["on"] if velocity is None else velocity) if on else leds["off"]
+        channel, number = target
+        if leds["message"] == "cc":
+            message = mido.Message("control_change", channel=channel, control=number, value=value)
+        else:
+            message = mido.Message("note_on", channel=channel, note=number, velocity=value)
         try:
             with self._out_lock:
                 if self._out is not None:
-                    self._out.send(mido.Message("note_on", channel=target[0], note=target[1],
-                                                velocity=velocity if on else 0))
+                    self._out.send(message)
         except Exception as e:
             logger.error("Envoi LED impossible : %s", e)
 
     def _sync_leds(self):
         """Mute LED lit = group muted; Assign LED lit (in the group's color) = an app is assigned."""
+        if not self.profile.has_leds:
+            return
         for g in self.groups:
             self._send_led(g.get("mute", ""), g["uid"] in self.muted)
-            velocity = ASSIGN_COLORS.get(g.get("color"), ASSIGN_COLORS[DEFAULT_ASSIGN_COLOR])[0]
-            self._send_led(g.get("assign", ""), bool(g.get("app")), velocity)
+            self._send_led(g.get("assign", ""), bool(g.get("app")), self.profile.color_velocity(g.get("color")))
 
     # -- mixer -------------------------------------------------------------
 
@@ -124,13 +136,29 @@ class MixerEngine(QObject):
                 return g["app"]
         return None
 
-    def _handle_note(self, pulse, channel: int, note: int):
+    def _button_press(self, msg):
+        """None if `msg` is not a button message for this profile, else True/False: does it count as a press?"""
+        trigger_any = self.profile.button_trigger == "any"
+        if self.profile.buttons_message == "cc":
+            if msg.type != "control_change":
+                return None
+            return trigger_any or msg.value > 0
+        if msg.type not in ("note_on", "note_off"):
+            return None
+        return trigger_any or (msg.type == "note_on" and msg.velocity > 0)
+
+    def _is_button_key(self, channel: int, number: int) -> bool:
+        """CC buttons share the message type with faders: tell them apart by the configured keys."""
+        return any(key_matches(g.get(field, ""), channel, number)
+                   for g in self.groups for field in ("mute", "assign"))
+
+    def _handle_button(self, pulse, channel: int, number: int):
         """A button was pressed: toggle a group's mute or ask the UI to assign the focused app."""
         for g in self.groups:
-            if key_matches(g.get("assign", ""), channel, note):
+            if key_matches(g.get("assign", ""), channel, number):
                 self.assignRequested.emit(g["uid"])
                 return
-            if g.get("app") and key_matches(g.get("mute", ""), channel, note):
+            if g.get("app") and key_matches(g.get("mute", ""), channel, number):
                 muted = g["uid"] not in self.muted
                 try:
                     result = set_mute(pulse, g["app"], muted)
@@ -163,10 +191,13 @@ class MixerEngine(QObject):
                             continue
                         if self._learn_step(msg, number):
                             continue
-                        if msg.type == "control_change":
+                        pressed = self._button_press(msg)
+                        if pressed is not None and (msg.type != "control_change"
+                                                    or self._is_button_key(msg.channel, number)):
+                            if pressed:
+                                self._handle_button(pulse, msg.channel, number)
+                        elif msg.type == "control_change":
                             latest[(msg.channel, number)] = msg.value
-                        else:
-                            self._handle_note(pulse, msg.channel, number)
                     self._learn_step()  # handles the learn timeout
 
                     for (channel, control), value in latest.items():

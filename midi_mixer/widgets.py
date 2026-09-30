@@ -3,10 +3,9 @@ from PySide6.QtCore import QPropertyAnimation, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QPushButton, QVBoxLayout, QWidget,
+    QMenu, QPushButton, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .constants import ASSIGN_COLORS, DEFAULT_ASSIGN_COLOR
 from .midi_utils import format_key
 from .theme import BORDER, MUTED, RED, dot_icon, volume_color
 
@@ -207,20 +206,24 @@ class LearnField(QWidget):
 
 
 class GroupRow(QFrame):
-    """Detail panel of one group: ONE target app and its fader / mute / assign controls."""
+    """Detail panel of one group: ONE target app and its fader / mute / assign controls.
 
-    FIELDS = (("volume", "Fader (CC)", "CC", "control_change"),
-              ("mute", "Mute (note)", "Note", "note"),
-              ("assign", "Assign (note)", "Note", "note"))
+    What the buttons are (notes or CCs) and whether LED colors exist come from the profile.
+    """
 
     changed = Signal()
     learnRequested = Signal(object, str)   # (row, field)
     removeRequested = Signal(object)
 
-    def __init__(self, group: dict, apps):
+    def __init__(self, group: dict, apps, profile):
         super().__init__()
         self.setObjectName("card")
         self.uid = group["uid"]
+        button = profile.button_label
+        # (field, label, key prefix shown in the field, message kind to learn)
+        self.fields_spec = (("volume", "Fader (CC)", "CC", "control_change"),
+                            ("mute", f"Mute ({button})", button, profile.button_learn_kind),
+                            ("assign", f"Assign ({button})", button, profile.button_learn_kind))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
         outer.setSpacing(12)
@@ -248,19 +251,23 @@ class GroupRow(QFrame):
         self.app.activated.connect(lambda _i: self.changed.emit())
         self.app.lineEdit().editingFinished.connect(self.changed)
 
+        # The LED color only makes sense when the controller has LEDs with a palette.
         self.color = NoScrollComboBox()
         self.color.setToolTip("Couleur de la LED d'Assign quand une application est assignée")
         self.color.setMinimumWidth(170)
-        for name, (_vel, hex_color) in ASSIGN_COLORS.items():
-            self.color.addItem(dot_icon(hex_color), name)
-        self.color.setCurrentText(group.get("color", DEFAULT_ASSIGN_COLOR))
+        for name, spec in profile.colors.items():
+            self.color.addItem(dot_icon(spec["hex"]), name)
+        self.color.setCurrentText(group.get("color") or profile.default_color or "")
         self.color.activated.connect(lambda _i: self.changed.emit())
+        self.color_label = label("Couleur de la LED")
+        self.color_label.setVisible(bool(profile.colors))
+        self.color.setVisible(bool(profile.colors))
 
         grid.addWidget(label("Nom"), 0, 0)
         grid.addWidget(self.name, 0, 1)
         grid.addWidget(label("Application"), 1, 0)
         grid.addWidget(self.app, 1, 1)
-        grid.addWidget(label("Couleur de la LED"), 2, 0)
+        grid.addWidget(self.color_label, 2, 0)
         grid.addWidget(self.color, 2, 1, Qt.AlignLeft)
 
         section = QLabel("Boutons MIDI")
@@ -268,8 +275,8 @@ class GroupRow(QFrame):
         grid.addWidget(section, 3, 0, 1, 2)
 
         self.fields = {}
-        for i, (field, text, kind, _msg) in enumerate(self.FIELDS):
-            f = LearnField(format_key(group.get(field, ""), kind), "non assigné")
+        for i, (field, text, prefix, _kind) in enumerate(self.fields_spec):
+            f = LearnField(format_key(group.get(field, ""), prefix), "non assigné")
             f.changed.connect(self.changed)
             f.learnRequested.connect(lambda fld=field: self.learnRequested.emit(self, fld))
             self.fields[field] = f
@@ -284,9 +291,10 @@ class GroupRow(QFrame):
         outer.addWidget(self.remove_btn, 0, Qt.AlignLeft)
 
     def kind_for(self, field: str):
-        for name, _label, label, msg in self.FIELDS:
+        """(key prefix, message kind to learn) for `field`."""
+        for name, _label, prefix, kind in self.fields_spec:
             if name == field:
-                return label, msg
+                return prefix, kind
 
     def set_app(self, app: str):
         self.app.setCurrentText(app)
@@ -305,6 +313,54 @@ class GroupRow(QFrame):
     def clear_learning(self):
         for f in self.fields.values():
             f.set_learning(False)
+
+
+class ProfileBar(QWidget):
+    """Profile selector plus a "Gérer" menu. Emits what the user asked for; the window does the work."""
+
+    profileSelected = Signal(str)   # profile id
+    actionRequested = Signal(str)   # "new" | "duplicate" | "rename" | "delete" | "import" | "export"
+
+    ACTIONS = (("new", "Nouveau profil…"), ("duplicate", "Dupliquer…"), ("rename", "Renommer…"),
+               ("delete", "Supprimer"), None, ("import", "Importer un profil…"), ("export", "Exporter ce profil…"))
+
+    def __init__(self):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.combo = NoScrollComboBox()
+        self.combo.setMinimumWidth(200)
+        self.combo.setToolTip("Profil du contrôleur")
+        self.combo.activated.connect(lambda _i: self.profileSelected.emit(self.combo.currentData()))
+        self.menu_btn = QToolButton()
+        self.menu_btn.setText("Gérer ▾")
+        self.menu_btn.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(self.menu_btn)
+        self.actions = {}
+        for entry in self.ACTIONS:
+            if entry is None:
+                menu.addSeparator()
+                continue
+            name, text = entry
+            action = menu.addAction(text)
+            action.triggered.connect(lambda _checked=False, n=name: self.actionRequested.emit(n))
+            self.actions[name] = action
+        self.menu_btn.setMenu(menu)
+        self._menu = menu  # keep a reference alive
+        lay.addWidget(QLabel("Profil"))
+        lay.addWidget(self.combo)
+        lay.addWidget(self.menu_btn)
+
+    def set_profiles(self, profiles, active_id):
+        """`profiles` is [(id, name)]; the last profile cannot be deleted."""
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        for pid, name in profiles:
+            self.combo.addItem(name, pid)
+        self.combo.setCurrentIndex(max(0, self.combo.findData(active_id)))
+        self.combo.blockSignals(False)
+        self.actions["delete"].setEnabled(len(profiles) > 1)
 
 
 class GroupList(QListWidget):

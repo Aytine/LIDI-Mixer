@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "name": "APC40 mkII",
+  "port_hint": "apc40",
+  "buttons": {"message": "note", "trigger": "any"},
+  "leds": {
+    "message": "note",
+    "on": 127,
+    "off": 0,
+    "default_color": "Vert",
+    "colors": {
+      "Vert":   {"velocity": 21, "hex": "#2ecc71"},
+      "Rouge":  {"velocity": 5,  "hex": "#e74c3c"},
+      "Orange": {"velocity": 9,  "hex": "#e67e22"},
+      "Jaune":  {"velocity": 13, "hex": "#f1c40f"},
+      "Cyan":   {"velocity": 37, "hex": "#22d3ee"},
+      "Bleu":   {"velocity": 45, "hex": "#3a7ebf"},
+      "Violet": {"velocity": 53, "hex": "#9b59b6"},
+      "Rose":   {"velocity": 57, "hex": "#ff6fae"},
+      "Blanc":  {"velocity": 3,  "hex": "#ecf0f1"}
+    }
+  },
+  "group_template": {
+    "count": 8,
+    "volume": {"number": 7,  "channel": 1, "channel_step": 1},
+    "mute":   {"number": 49, "channel": 1, "channel_step": 1},
+    "assign": {"number": 0,  "channel": 1, "channel_step": 1}
+  },
+  "mappings": {"14": "MASTER"}
+}

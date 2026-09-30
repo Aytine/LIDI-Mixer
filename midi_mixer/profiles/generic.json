@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Contrôleur générique",
+  "port_hint": "",
+  "buttons": {"message": "note", "trigger": "press"},
+  "group_template": {"count": 4},
+  "mappings": {}
+}
