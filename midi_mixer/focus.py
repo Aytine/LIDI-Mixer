@@ -53,6 +53,24 @@ def active_window_info():
         return None
 
 
+def _identity(si, candidates):
+    """The label of stream `si` that best names the app the user is looking at.
+
+    A stream's `application.name` can be generic or shared: Electron apps such as
+    Discord play through streams named "Chromium" while their process binary is
+    "Discord". So when one of the window's own names (class, process name)
+    equals the stream's binary, name or media, return that field, binary first;
+    otherwise the usual application name.
+    """
+    props = getattr(si, "proplist", {}) or {}
+    wanted = {c.lower() for c in candidates}
+    for key in ("application.process.binary", "application.name", "media.name"):
+        value = props.get(key)
+        if value and value.lower() in wanted:
+            return value
+    return props.get("application.name") or display_name(si)
+
+
 def focused_app_name(pulse):
     """Name of the app owning the focused window, in a form `si_matches_target` understands.
 
@@ -67,6 +85,13 @@ def focused_app_name(pulse):
     if pid == os.getpid():
         return None  # the mixer itself has the focus
 
+    candidates = {c for c in wm_class if c}
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            candidates.add(f.read().strip())
+    except (OSError, TypeError):
+        pass
+
     streams = pulse.sink_input_list()
     if pid:
         for si in streams:
@@ -76,15 +101,15 @@ def focused_app_name(pulse):
             except ValueError:
                 si_pid = 0
             if si_pid and pid in _ancestors(si_pid):
-                return props.get("application.name") or display_name(si)
+                return _identity(si, candidates)
 
-    candidates = {c for c in wm_class if c}
-    try:
-        with open(f"/proc/{pid}/comm") as f:
-            candidates.add(f.read().strip())
-    except (OSError, TypeError):
-        pass
-    for si in streams:
-        if any(si_matches_target(si, c) for c in candidates):
-            return display_name(si)
+    matching = [si for si in streams if any(si_matches_target(si, c) for c in candidates)]
+    if matching:
+        # A stream whose binary is the window's program is a surer match than one that merely has the same name
+        # (Discord's "Chromium" streams versus the real Chromium browser).
+        wanted = {c.lower() for c in candidates}
+        best = next((si for si in matching
+                     if (getattr(si, "proplist", {}) or {}).get("application.process.binary", "").lower() in wanted),
+                    matching[0])
+        return _identity(best, candidates)
     return wm_class[1] if len(wm_class) > 1 else (next(iter(candidates), None))
