@@ -79,7 +79,7 @@ class SpectrumAnalyzer:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def sync(self, pulse, groups):
+    def sync(self, pulse, groups, profile):
         """Nothing to follow: the spectrum is that of the whole output (same interface as vumeter.GroupMeters)."""
 
     def stop(self):

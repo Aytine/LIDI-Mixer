@@ -119,3 +119,28 @@ def test_pad_grid_is_validated_and_saved():
     assert Profile({"pad": {"note": 120, "note_step": 8}}).pad is None   # rows would run past note 127
     assert Profile({"pad": {"note": 32, "cols": 16, "channel": 2, "channel_step": 1}}).pad is None   # columns past channel 16
     assert Profile().pad is None and "pad" not in Profile().to_dict()
+
+
+def test_apc_mini_template(apc_mini_profile):
+    p = apc_mini_profile
+    assert p.matches_port("APC MINI:APC MINI MIDI 1 20:0") and not p.matches_port("APC40 mkII:APC40 mkII MIDI 1 24:0")
+    assert p.button_trigger == "press" and len(p.groups) == 8
+    assert [g["volume"] for g in p.groups[:2]] == ["1:48", "1:49"] and p.groups[7]["mute"] == "1:71"
+    assert p.groups[0]["assign"] == "1:82" and p.mappings == {"56": "MASTER"}
+    notes = sorted(p.pad["note"] + r * p.pad["note_step"] + c * p.pad["note_col_step"] for r in range(5) for c in range(8))
+    assert notes[0] == 24 and notes[-1] == 63 and len(set(notes)) == 40           # the five top rows of the 8x8 grid
+    assert set(p.pad["colors"].values()) == {1, 3, 5}                              # green, red, yellow only
+
+
+def test_apc40_strips_are_told_apart_by_channel(apc_profile):
+    assert [apc_profile.strip_column(f"{c}:7") for c in (1, 2, 8)] == [0, 1, 7]
+    assert apc_profile.strip_column("7") is None and apc_profile.strip_column("") is None
+
+
+def test_strip_status_led_follows_the_strip(apc_profile, apc_mini_profile):
+    assert [apc_profile.indicator_key({"volume": f"{c}:7"}) for c in (1, 8)] == ["1:52", "8:52"]
+    assert apc_profile.indicator_key({"volume": "7"}) == "" and apc_profile.indicator_key({}) == ""
+    assert apc_profile.indicator["assigned"] == 1 and apc_profile.indicator["focused"] == 2
+    assert apc_mini_profile.indicator is None and apc_mini_profile.indicator_key({"volume": "1:48"}) == ""
+    assert Profile(apc_profile.to_dict()).indicator == apc_profile.indicator
+    assert Profile({"indicator": {"number": 52}}).indicator is None            # needs a channel to tell strips apart

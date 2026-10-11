@@ -11,7 +11,6 @@ import numpy as np
 
 from .animations import COLS
 from .audio import si_matches_target
-from .midi_utils import key_channel_number
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +75,10 @@ class StreamMeter:
                 pass
 
 
-def group_column(group):
-    """Pad column (0-based) of the fader strip a group is on, from its volume control's MIDI channel; else None."""
-    target = key_channel_number(group.get("volume", ""))
-    return target[0] if target and 0 <= target[0] < COLS else None
+def group_column(group, profile):
+    """Pad column (0-based) above the fader strip a group is on (see Profile.strip_column), else None."""
+    column = profile.strip_column(group.get("volume", ""))
+    return column if column is not None and 0 <= column < COLS else None
 
 
 class GroupMeters:
@@ -91,7 +90,7 @@ class GroupMeters:
     def start(self):
         pass
 
-    def sync(self, pulse, groups):
+    def sync(self, pulse, groups, profile):
         """Follow the streams the groups' applications have right now (call it every second or so)."""
         wanted = {}
         try:
@@ -100,7 +99,7 @@ class GroupMeters:
             logger.error("Vu-mètres : %s", e)
             return
         for group in groups:
-            column = group_column(group)
+            column = group_column(group, profile)
             if column is None or not group.get("app"):
                 continue
             for si in streams:

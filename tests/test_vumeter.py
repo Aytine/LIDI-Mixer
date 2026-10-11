@@ -2,6 +2,7 @@ import numpy as np
 
 from midi_mixer import vumeter
 from midi_mixer.vumeter import GroupMeters, group_column, level_of
+from midi_mixer.profile import Profile
 from conftest import FakePulse, FakeStream
 
 
@@ -12,13 +13,19 @@ def test_level_follows_loudness():
     assert level_of(np.ones(256)) == 1.0
 
 
-def test_a_group_sits_in_the_column_of_its_fader_channel():
-    assert group_column({"volume": "1:7"}) == 0 and group_column({"volume": "8:7"}) == 7
-    assert group_column({"volume": "9:7"}) is None and group_column({"volume": "7"}) is None
-    assert group_column({}) is None
+def test_a_group_sits_above_its_fader_strip(apc_profile):
+    assert group_column({"volume": "1:7"}, apc_profile) == 0 and group_column({"volume": "8:7"}, apc_profile) == 7
+    assert group_column({"volume": "9:7"}, apc_profile) is None and group_column({"volume": "7"}, apc_profile) is None
+    assert group_column({}, apc_profile) is None
 
 
-def test_meters_follow_the_streams_of_the_groups_apps(monkeypatch):
+def test_strips_sharing_a_channel_are_told_apart_by_their_control_number(apc_mini_profile):
+    assert [group_column({"volume": f"1:{48 + i}"}, apc_mini_profile) for i in (0, 1, 7)] == [0, 1, 7]
+    assert group_column({"volume": "1:56"}, apc_mini_profile) is None         # the master fader: no column
+    assert group_column({"volume": "1:47"}, apc_mini_profile) is None
+
+
+def test_meters_follow_the_streams_of_the_groups_apps(monkeypatch, apc_profile):
     created = []
 
     class FakeMeter:
@@ -36,13 +43,13 @@ def test_meters_follow_the_streams_of_the_groups_apps(monkeypatch):
     groups = [{"app": "Spotify", "volume": "1:7"}, {"app": "firefox", "volume": "3:7"},
               {"app": "", "volume": "2:7"}, {"app": "Missing", "volume": "4:7"}, {"app": "Other", "volume": ""}]
     meters = GroupMeters()
-    meters.sync(FakePulse(spotify, firefox, other), groups)
+    meters.sync(FakePulse(spotify, firefox, other), groups, apc_profile)
     assert sorted(m.index for m in created) == [10, 11]          # no group app / unknown app / no fader: no meter
     created[0].level, created[1].level = 0.4, 0.9
     bars = meters.bars
     assert bars[0] == 0.4 and bars[2] == 0.9 and bars[1] == bars[3] == 0
 
-    meters.sync(FakePulse(firefox), groups)                      # Spotify closed
+    meters.sync(FakePulse(firefox), groups, apc_profile)                      # Spotify closed
     assert created[0].stopped and not created[1].stopped
     meters.stop()
     assert created[1].stopped and not meters.bars.any()

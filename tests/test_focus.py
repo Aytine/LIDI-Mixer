@@ -58,3 +58,14 @@ def test_a_generic_binary_is_not_used_when_the_window_does_not_name_it(monkeypat
     monkeypatch.setattr(focus, "active_window_info", lambda: (7, ("nomanssky.exe", "nomanssky.exe")))
     pulse = FakePulse(FakeStream("No Man's Sky", binary="wine64-preloader", media="nomanssky.exe"))
     assert focus.focused_app_name(pulse) == "nomanssky.exe"
+
+
+def test_same_app_compares_names_without_pid_suffix_or_through_a_shared_stream():
+    from conftest import FakePulse, FakeStream
+    from midi_mixer.focus import same_app
+
+    assert same_app(FakePulse(), "Discord (Discord, pid:12)", "discord")
+    assert not same_app(FakePulse(), "Discord", "Spotify") and not same_app(FakePulse(), "", "x")
+    shared = FakeStream("Chromium", binary="Discord")
+    assert same_app(FakePulse(shared), "Chromium", "Discord")                  # two names of one stream
+    assert not same_app(FakePulse(shared), "Chromium", "Firefox")

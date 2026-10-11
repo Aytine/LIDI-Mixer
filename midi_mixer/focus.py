@@ -2,7 +2,7 @@
 import logging
 import os
 
-from .audio import display_name, si_matches_target
+from .audio import display_name, si_matches_target, target_base_name
 
 try:
     from Xlib import X, display as xdisplay
@@ -69,6 +69,15 @@ def _identity(si, candidates):
         if value and value.lower() in wanted:
             return value
     return props.get("application.name") or display_name(si)
+
+
+def same_app(pulse, a: str, b: str) -> bool:
+    """True if app names `a` and `b` (as saved in a group / returned by focused_app_name) are the same app."""
+    if not a or not b:
+        return False
+    if target_base_name(a) == target_base_name(b):
+        return True
+    return any(si_matches_target(si, a) and si_matches_target(si, b) for si in pulse.sink_input_list())
 
 
 def focused_app_name(pulse):

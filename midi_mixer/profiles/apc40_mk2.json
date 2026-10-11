@@ -20,6 +20,7 @@
       "Blanc":  {"velocity": 3,  "hex": "#ecf0f1"}
     }
   },
+  "indicator": {"number": 52, "channel": 1, "channel_step": 1, "assigned": 1, "focused": 2},
   "pad": {
     "rows": 5, "cols": 8,
     "channel": 1, "channel_step": 0,

@@ -17,7 +17,7 @@ def test_settings_default_and_roundtrip():
 
 def test_bundled_templates_include_the_generic_one_and_the_apc40():
     templates = config.bundled_templates()
-    assert {"generic", "apc40_mk2"} <= set(templates)
+    assert {"generic", "apc40_mk2", "apc_mini"} <= set(templates)
     assert config.match_template([APC_PORT]) == "apc40_mk2"
     assert config.match_template(["Some Other Controller"]) is None
     assert config.match_template([]) is None

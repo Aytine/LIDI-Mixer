@@ -122,7 +122,7 @@ def test_no_led_without_an_output_or_without_a_channel(engine):
     engine.groups = []
     engine._out = types.SimpleNamespace(send=engine.sent.append)
     engine.sent.clear()
-    engine.set_groups([group(mute="49", assign="0")])   # keys without a channel cannot be lit
+    engine.set_groups([group(mute="49", assign="0", volume="7")])   # keys without a channel cannot be lit
     assert engine.sent == []
 
 
@@ -385,3 +385,53 @@ def test_spectrum_animation_starts_and_stops_the_audio_capture(engine, monkeypat
     engine._pad_tick(2.0)
     engine.release_pad()
     assert stopped == [1, 1] and engine.pad_animation == ""
+
+
+# --------------------------------------------------- strip status LEDs (APC40: Clip Stop buttons)
+
+def strip_led(e, channel=0):
+    """Last value sent to the status LED (note 52) of the strip on `channel`, or None."""
+    sent = [v for ch, number, v in leds(e) if (ch, number) == (channel, 52)]
+    return sent[-1] if sent else None
+
+
+def test_strip_led_is_off_without_an_app_and_lit_with_one(engine):
+    engine.set_groups([group(app="")])
+    assert strip_led(engine) == 0
+    engine.set_groups([group(app="Discord")])
+    assert strip_led(engine) == 1
+    engine.set_groups([group(uid="u2", app="Discord", volume="3:7", mute="3:49", assign="1:2")])
+    assert strip_led(engine, 2) == 1 and strip_led(engine, 0) == 0          # the LED of the strip the group is on
+
+
+def test_strip_led_blinks_for_the_group_whose_app_has_the_focus(engine, monkeypatch):
+    monkeypatch.setattr(engine_module, "focused_app_name", lambda pulse: "Discord")
+    monkeypatch.setattr(engine_module, "same_app", lambda pulse, a, b: a.lower() == b.lower())
+    engine.set_groups([group(uid="u1", app="Discord"), group(uid="u2", app="Spotify", volume="2:7", mute="2:49",
+                                                           assign="1:1")])
+    engine._poll_focus(None)
+    assert strip_led(engine, 0) == 2 and strip_led(engine, 1) == 1          # focused blinks, the other stays lit
+    engine.sent.clear()
+    engine._poll_focus(None)
+    assert engine.sent == []                                                  # nothing changed: nothing sent
+    monkeypatch.setattr(engine_module, "focused_app_name", lambda pulse: "Spotify")
+    engine._poll_focus(None)
+    assert strip_led(engine, 0) == 1 and strip_led(engine, 1) == 2
+    monkeypatch.setattr(engine_module, "focused_app_name", lambda pulse: None)   # e.g. Wayland, or a desktop click
+    engine._poll_focus(None)
+    assert strip_led(engine, 0) == 1 and strip_led(engine, 1) == 1
+
+
+def test_strip_leds_go_off_when_the_group_is_removed_or_moved(engine):
+    engine.set_groups([group(app="Discord")])
+    engine.set_groups([])
+    assert strip_led(engine) == 0
+    engine.set_groups([group(app="Discord")])
+    engine.set_groups([group(app="Discord", volume="2:7")])                   # moved to strip 2
+    assert strip_led(engine, 0) == 0 and strip_led(engine, 1) == 1
+
+
+def test_profile_without_strip_leds_sends_nothing(engine):
+    engine.profile = make_engine(Profile({"leds": {"on": 127, "off": 0}})).profile
+    engine.set_groups([group(app="Discord")])
+    assert strip_led(engine) is None

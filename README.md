@@ -20,7 +20,7 @@ controller... and you can switch between them.
 - **Profiles**: one per controller, switch from the window or the tray icon; import / export to share them.
   The app switches by itself when you plug another controller.
 - **LEDs** (when the controller supports it): Mute LED lit while muted. The pads are left free for animations.
-- **Pad animations**: if the profile describes a pad grid (APC40 mkII: 8 x 5), the *Pad* selector plays a pixel-art
+- **Pad animations**: if the profile describes a pad grid (APC40 mkII: 8 x 5; APC mini: the 5 top rows), the *Pad* selector plays a pixel-art
   animation on it in a loop: Pac-Man, spiral, rain, heart, wave, bouncing ball. They are defined in
   `midi_mixer/animations.py` (a frame is 5 strings of 8 characters, one letter per color).
 - Tray icon, closes to the tray, optional launch at session start, styled volume popup, live changes (no
@@ -42,7 +42,7 @@ chmod +x ./mixer.sh
 ```
 
 On first launch the app creates a profile: the bundled one matching a connected controller if it knows it
-(currently APC40 mkII), otherwise a **generic** profile where you assign every control with *Learn*. An autostart
+(currently APC40 mkII and APC mini, the latter untested on real hardware), otherwise a **generic** profile where you assign every control with *Learn*. An autostart
 entry is created in `~/.config/autostart/midi-mixer.desktop` (toggle it from the tray menu).
 
 ## Profiles
@@ -98,7 +98,7 @@ midi_mixer/
   constants.py          app constants (nothing controller specific)
   animations.py         pad grid animations (frames)                             (pure, no Qt)
   profile.py            Profile model: what a controller is and how it behaves   (pure, no Qt)
-  profiles/*.json       bundled profile templates (APC40 mkII, generic)
+  profiles/*.json       bundled profile templates (APC40 mkII, APC mini, generic)
   config.py             settings + profile files, import/export, migration       (pure, no Qt)
   midi_utils.py         CC/note keys, message kinds                              (pure, no Qt)
   audio.py              PulseAudio helpers: matching, mute                       (pure, no Qt)

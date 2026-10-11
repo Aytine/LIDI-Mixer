@@ -35,6 +35,15 @@ def apc_profile():
     return Profile.from_template(bundled_templates()["apc40_mk2"])
 
 
+@pytest.fixture
+def apc_mini_profile():
+    """The bundled APC mini template (momentary note buttons, 8 faders sharing one channel, red/green/yellow pads)."""
+    from midi_mixer.config import bundled_templates
+    from midi_mixer.profile import Profile
+
+    return Profile.from_template(bundled_templates()["apc_mini"])
+
+
 class FakeStream:
     """Minimal stand-in for a pulsectl sink input."""
 

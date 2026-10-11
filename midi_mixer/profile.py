@@ -84,6 +84,20 @@ def _normalize_pad(raw):
     return pad
 
 
+def _normalize_indicator(raw):
+    """One status LED per fader strip (APC40: the Clip Stop buttons), or None.
+
+    The LED of strip N is the note / CC `number + N * number_step` on channel `channel + N * channel_step`;
+    `assigned` / `focused` are the LED values for "an app is assigned" / "and its window has the focus".
+    """
+    spec = _normalize_spec(raw)
+    if spec is None or spec["channel"] is None:
+        return None
+    spec["assigned"] = _int(raw.get("assigned"), 1, 1, 127)
+    spec["focused"] = _int(raw.get("focused"), 2, 1, 127)
+    return spec
+
+
 class Profile:
     """A controller profile plus the user's settings for it. `Profile()` is a neutral profile."""
 
@@ -99,6 +113,7 @@ class Profile:
         self.button_trigger = buttons.get("trigger") if buttons.get("trigger") in BUTTON_TRIGGERS else "press"
         self.leds = _normalize_leds(raw.get("leds"))
         self.pad = _normalize_pad(raw.get("pad"))                                  # LED grid for animations
+        self.indicator = _normalize_indicator(raw.get("indicator"))                # status LED of each strip
         self.pad_animation = str(raw.get("pad_animation") or "")                   # name in animations.ANIMATIONS
         self.template = {"count": _int(template.get("count"), 4, 0, 64)}
         for field in GROUP_FIELDS:
@@ -152,6 +167,37 @@ class Profile:
                 return ""
         return mapping_key(channel, number) if 0 <= number <= 127 else ""
 
+    def strip_column(self, volume_key: str):
+        """0-based position of the fader strip whose volume control is `volume_key`, from the template; else None.
+
+        Strips are told apart by MIDI channel (APC40: one channel per strip) or, when they share a
+        channel, by control number (APC mini: CC 48, 49, 50...).
+        """
+        spec = self.template.get("volume")
+        if spec is None or not volume_key:
+            return None
+        channel, _, number = volume_key.rpartition(":")
+        try:
+            number = int(number)
+            channel = int(channel) if channel else None
+        except ValueError:
+            return None
+        for step, value, first in ((spec["channel_step"], channel, spec["channel"]),
+                                   (spec["number_step"], number, spec["number"])):
+            if step and value is not None and first is not None and (value - first) % step == 0:
+                return (value - first) // step
+        return None
+
+    def indicator_key(self, group: dict) -> str:
+        """Config key ("1:52"...) of the status LED above the group's fader strip, "" if there is none."""
+        spec = self.indicator
+        column = self.strip_column(group.get("volume", ""))
+        if spec is None or column is None:
+            return ""
+        channel = spec["channel"] + column * spec["channel_step"]
+        number = spec["number"] + column * spec["number_step"]
+        return mapping_key(channel, number) if 1 <= channel <= 16 and 0 <= number <= 127 else ""
+
     def make_group(self, index: int, name: str = None) -> dict:
         group = {"uid": uuid.uuid4().hex[:8], "name": name or f"Groupe {index + 1}", "app": "", "command": ""}
         for field in GROUP_FIELDS:
@@ -200,6 +246,8 @@ class Profile:
         }
         if self.leds:
             data["leds"] = self.leds
+        if self.indicator:
+            data["indicator"] = self.indicator
         if self.pad:
             data["pad"] = self.pad
             data["pad_animation"] = self.pad_animation

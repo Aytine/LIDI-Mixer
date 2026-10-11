@@ -138,11 +138,12 @@ def load_profile(pid: str):
     data = _read_json(path) if os.path.exists(path) else None
     if not isinstance(data, dict):
         return None
-    if "pad" not in data and data.get("port_hint"):
-        # Profiles saved before the pad grid existed: borrow it from the bundled template of the same controller.
+    if data.get("port_hint"):
+        # Profiles saved before the pad grid / strip LEDs existed: borrow them from the bundled template of the
+        # same controller.
         for template in bundled_templates().values():
-            if template.get("port_hint") == data["port_hint"] and "pad" in template:
-                data = {**data, "pad": template["pad"]}
+            if template.get("port_hint") == data["port_hint"]:
+                data = {**{k: template[k] for k in ("pad", "indicator") if k in template}, **data}
                 break
     return Profile(data)
 

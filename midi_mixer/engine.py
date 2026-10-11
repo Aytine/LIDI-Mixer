@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 from .animations import ANIMATIONS, LIVE_ANIMATIONS, OFF
 from .audio import display_name, set_mute, si_matches_target
 from .constants import LEARN_TIMEOUT_S
+from .focus import focused_app_name, same_app
 from .midi_utils import key_channel_number, key_matches, mapping_key, midi_number, msg_kind
 from .profile import Profile
 from .spectrum import SpectrumAnalyzer, bars_to_frame
@@ -23,6 +24,7 @@ LED_RESYNC_SECONDS = 3  # how often the LEDs are re-sent (the controller loses t
 
 _UNSET = object()
 LIVE_SOURCES = {"spectrum": SpectrumAnalyzer, "vu": GroupMeters}   # live animation -> what feeds its bars
+FOCUS_POLL_SECONDS = 0.5   # how often the focused window is looked at (strip status LEDs)
 VU_SYNC_SECONDS = 1.0   # how often the group meters look for new / vanished audio streams
 
 
@@ -62,6 +64,7 @@ class MixerEngine(QObject):
         self._pad_next = 0.0          # when to show it
         self._pad_shown = {}          # (row, col) -> LED value last sent
         self._pad_frame = None        # frame currently on the pads
+        self._focused = set()         # uids of the groups whose app has the focus
         self._live = None             # source of the live animation shown (see LIVE_SOURCES), else None
         self._live_sync = 0.0
         self._pad_resync = 0.0
@@ -75,6 +78,9 @@ class MixerEngine(QObject):
             g = new.get(old["uid"])
             if old.get("mute") and (g is None or g.get("mute") != old["mute"]):
                 self._send_led(old["mute"], False)
+            old_light = self.profile.indicator_key(old)
+            if old_light and (g is None or self.profile.indicator_key(g) != old_light):
+                self._send_value(old_light, 0)
         self.groups = groups
         self._sync_leds()
 
@@ -102,10 +108,15 @@ class MixerEngine(QObject):
     def _send_led(self, key: str, on: bool):
         """Light (the profile's plain 'on' value) or switch off the LED of the button at `key`."""
         leds = self.profile.leds
+        if leds:
+            self._send_value(key, leds["on"] if on else leds["off"])
+
+    def _send_value(self, key: str, value: int):
+        """Set the LED of the button at `key` to `value` (what the value means depends on the controller)."""
+        leds = self.profile.leds
         target = key_channel_number(key) if key else None
         if not leds or target is None or self._out is None:
             return
-        value = leds["on"] if on else leds["off"]
         channel, number = target
         if leds["message"] == "cc":
             message = mido.Message("control_change", channel=channel, control=number, value=value)
@@ -186,7 +197,7 @@ class MixerEngine(QObject):
         if now >= self._pad_next:
             if animation.frames is None:     # live animation: drawn from the sound being played
                 if pulse is not None and now >= self._live_sync:
-                    self._live.sync(pulse, self.groups)
+                    self._live.sync(pulse, self.groups, self.profile)
                     self._live_sync = now + VU_SYNC_SECONDS
                 frame = bars_to_frame(self._live.bars, animation.colors)
             else:
@@ -204,6 +215,31 @@ class MixerEngine(QObject):
             return
         for g in self.groups:
             self._send_led(g.get("mute", ""), g["uid"] in self.muted)
+            self._send_indicator(g)
+
+    def _send_indicator(self, group):
+        """Strip status LED: off = no app assigned, lit = assigned, `focused` value = its window has the focus."""
+        spec = self.profile.indicator
+        if spec is None:
+            return
+        if not group.get("app"):
+            value = 0
+        else:
+            value = spec["focused"] if group["uid"] in self._focused else spec["assigned"]
+        self._send_value(self.profile.indicator_key(group), value)
+
+    def _poll_focus(self, pulse):
+        """Which groups' app has the focus now; the strip LEDs are updated when that changes."""
+        try:
+            name = focused_app_name(pulse)
+            focused = {g["uid"] for g in self.groups if g.get("app") and name and same_app(pulse, g["app"], name)}
+        except Exception as e:
+            logger.error("Détection de l'application au premier plan : %s", e)
+            return
+        if focused != self._focused:
+            self._focused = focused
+            for g in self.groups:
+                self._send_indicator(g)
 
     # -- mixer -------------------------------------------------------------
 
@@ -288,12 +324,16 @@ class MixerEngine(QObject):
                 self._pad_reset()
                 self._sync_leds()
                 next_led_sync = time.monotonic() + LED_RESYNC_SECONDS
+                next_focus = 0.0
                 while self.running and self._thread is me:
                     # The controller forgets its LEDs when it loses power (PC suspend) while
                     # staying plugged in, so no port change tells us: just re-send them regularly.
                     if time.monotonic() >= next_led_sync:
                         self._sync_leds()
                         next_led_sync = time.monotonic() + LED_RESYNC_SECONDS
+                    if self.profile.indicator and time.monotonic() >= next_focus:
+                        self._poll_focus(pulse)
+                        next_focus = time.monotonic() + FOCUS_POLL_SECONDS
                     # Only the last value per control is applied, so a burst of
                     # messages from a fader does not flood PulseAudio.
                     latest = {}
