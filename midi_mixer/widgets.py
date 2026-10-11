@@ -206,7 +206,7 @@ class LearnField(QWidget):
 
 
 class GroupRow(QFrame):
-    """Detail panel of one group: ONE target app and its fader / mute / assign controls.
+    """Detail panel of one group: ONE target app and its fader / mute / assign / launch controls.
 
     What the buttons are (notes or CCs) and whether LED colors exist come from the profile.
     """
@@ -223,7 +223,8 @@ class GroupRow(QFrame):
         # (field, label, key prefix shown in the field, message kind to learn)
         self.fields_spec = (("volume", "Fader (CC)", "CC", "control_change"),
                             ("mute", f"Mute ({button})", button, profile.button_learn_kind),
-                            ("assign", f"Assign ({button})", button, profile.button_learn_kind))
+                            ("assign", f"Assign ({button})", button, profile.button_learn_kind),
+                            ("launch", f"Lancer ({button})", button, profile.button_learn_kind))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
         outer.setSpacing(12)
@@ -251,24 +252,19 @@ class GroupRow(QFrame):
         self.app.activated.connect(lambda _i: self.changed.emit())
         self.app.lineEdit().editingFinished.connect(self.changed)
 
-        # The LED color only makes sense when the controller has LEDs with a palette.
-        self.color = NoScrollComboBox()
-        self.color.setToolTip("Couleur de la LED d'Assign quand une application est assignée")
-        self.color.setMinimumWidth(170)
-        for name, spec in profile.colors.items():
-            self.color.addItem(dot_icon(spec["hex"]), name)
-        self.color.setCurrentText(group.get("color") or profile.default_color or "")
-        self.color.activated.connect(lambda _i: self.changed.emit())
-        self.color_label = label("Couleur de la LED")
-        self.color_label.setVisible(bool(profile.colors))
-        self.color.setVisible(bool(profile.colors))
+        # Optional: how to start the app when the Launch button is pressed (otherwise its .desktop launcher is used).
+        self.command = QLineEdit(group.get("command", ""))
+        self.command.setPlaceholderText("Automatique (raccourci de l'application), ou une commande")
+        self.command.setToolTip("Commande lancée par le bouton « Lancer ». Laisser vide pour utiliser le lanceur de "
+                                "l'application (fichier .desktop).")
+        self.command.editingFinished.connect(self.changed)
 
         grid.addWidget(label("Nom"), 0, 0)
         grid.addWidget(self.name, 0, 1)
         grid.addWidget(label("Application"), 1, 0)
         grid.addWidget(self.app, 1, 1)
-        grid.addWidget(self.color_label, 2, 0)
-        grid.addWidget(self.color, 2, 1, Qt.AlignLeft)
+        grid.addWidget(label("Commande"), 2, 0)
+        grid.addWidget(self.command, 2, 1)
 
         section = QLabel("Boutons MIDI")
         section.setObjectName("section")
@@ -280,8 +276,8 @@ class GroupRow(QFrame):
             f.changed.connect(self.changed)
             f.learnRequested.connect(lambda fld=field: self.learnRequested.emit(self, fld))
             self.fields[field] = f
-            grid.addWidget(label(text), 4 + i, 0)
-            grid.addWidget(f, 4 + i, 1)
+            grid.addWidget(label(text), 5 + i, 0)
+            grid.addWidget(f, 5 + i, 1)
         outer.addLayout(grid)
         outer.addStretch(1)
 

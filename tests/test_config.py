@@ -104,14 +104,14 @@ def test_bootstrap_keeps_the_active_profile_and_recovers_from_a_missing_one():
 def test_legacy_single_controller_config_becomes_an_apc40_profile():
     legacy = {"mappings": {"1:20": "Spotify"}, "_port": APC_PORT, "autostart": False,
               "groups": [{"uid": "g1", "name": "Musique", "app": "Spotify", "volume": "1:7", "mute": "1:49",
-                          "assign": "1:0", "color": "Bleu"}]}
+                          "assign": "1:0"}]}
     with open(config.legacy_config_path(), "w") as f:
         json.dump(legacy, f)
     settings, pid = config.bootstrap([])
     profile = config.load_profile(pid)
     assert profile.name == "APC40 mkII" and profile.port == APC_PORT and profile.has_leds
     assert profile.mappings == {"1:20": "Spotify"}
-    assert [(g["uid"], g["name"], g["app"], g["color"]) for g in profile.groups] == [("g1", "Musique", "Spotify", "Bleu")]
+    assert [(g["uid"], g["name"], g["app"]) for g in profile.groups] == [("g1", "Musique", "Spotify")]
     assert settings["autostart"] is False
     assert not os.path.exists(config.legacy_config_path())          # not migrated twice
     assert os.path.exists(config.legacy_config_path() + ".migrated")
@@ -122,3 +122,13 @@ def test_oldest_flat_mapping_file_is_migrated_too():
         json.dump({"56": "MASTER"}, f)
     _settings, pid = config.bootstrap([])
     assert config.load_profile(pid).mappings == {"56": "MASTER"}
+
+
+def test_old_profile_gets_the_pad_grid_of_its_controller(tmp_home):
+    from midi_mixer import config
+
+    config.add_profile(config.Profile({"name": "Old", "port_hint": "apc40"}))
+    config.add_profile(config.Profile({"name": "Other", "port_hint": "nanokontrol"}))
+    loaded = {name: config.load_profile(pid) for pid, name in config.list_profiles()}
+    assert loaded["Old"].pad["note"] == 32
+    assert loaded["Other"].pad is None

@@ -11,7 +11,6 @@ def test_neutral_profile_has_safe_defaults():
     assert (p.buttons_message, p.button_trigger, p.has_leds) == ("note", "press", False)
     assert len(p.groups) == 4 and all(g[f] == "" for g in p.groups for f in ("volume", "mute", "assign"))
     assert not p.matches_port("anything")                # no hint = matches nothing
-    assert p.color_velocity("Vert") is None and p.color_hex("Vert") is None
 
 
 def test_apc40_template_lays_groups_out_by_column(apc_profile):
@@ -47,18 +46,9 @@ def test_new_group_takes_the_first_free_position_and_name(apc_profile):
     assert full["name"] == "Groupe 9" and (full["volume"], full["mute"], full["assign"]) == ("", "", "")
 
 
-def test_leds_and_colors(apc_profile):
-    assert apc_profile.has_leds and apc_profile.default_color == "Vert"
-    assert apc_profile.color_velocity("Bleu") == 45
-    assert apc_profile.color_velocity("unknown") == 21   # falls back to the default color
-    assert apc_profile.color_hex("Rouge") == "#e74c3c"
-
-
-def test_colors_may_be_plain_numbers_and_leds_without_palette_use_the_on_value():
-    p = Profile({"leds": {"colors": {"Red": 15, "Green": 60}}})
-    assert p.color_velocity("Green") == 60 and p.colors["Green"]["hex"].startswith("#")
-    plain = Profile({"leds": {"on": 100}})
-    assert plain.has_leds and plain.colors == {} and plain.color_velocity("x") == 100
+def test_leds(apc_profile):
+    assert apc_profile.has_leds and apc_profile.leds["on"] == 127
+    assert Profile({"leds": {"on": 100}}).leds["on"] == 100
 
 
 def test_button_options_are_validated():
@@ -76,10 +66,10 @@ def test_garbage_input_never_raises():
     assert [g["name"] for g in p.groups] == ["ok"] and p.groups[0]["uid"]
 
 
-def test_saved_groups_with_an_unknown_color_get_the_default_one(apc_profile):
+def test_groups_no_longer_have_a_led_color(apc_profile):
     data = apc_profile.to_dict()
-    data["groups"][0]["color"] = "Turquoise"
-    assert Profile(data).groups[0]["color"] == "Vert"
+    data["groups"][0]["color"] = "Bleu"                 # saved by an older version
+    assert "color" not in Profile(data).groups[0] and "color" not in apc_profile.make_group(0)
 
 
 def test_to_dict_roundtrip_is_lossless(apc_profile):
@@ -100,3 +90,32 @@ def test_every_bundled_template_is_a_valid_profile(template_id):
     p = Profile.from_template(bundled_templates()[template_id])
     assert p.name and p.template["count"] == len(p.groups)
     assert Profile(p.to_dict()).to_dict() == p.to_dict()
+
+
+def test_groups_have_a_launch_control_and_an_optional_command(apc_profile):
+    group = apc_profile.groups[0]
+    assert group["launch"] == "" and group["command"] == ""          # no default button: the user picks one (Learn)
+    assert "launch" in apc_profile.to_dict()["groups"][0]
+
+
+def test_a_template_can_place_the_launch_button():
+    p = Profile({"group_template": {"count": 3, "launch": {"number": 40, "channel": 1, "number_step": 1}}})
+    assert [g["launch"] for g in p.groups] == ["1:40", "1:41", "1:42"]
+    assert Profile(p.to_dict()).to_dict() == p.to_dict()
+
+
+def test_groups_saved_before_the_launch_button_existed_still_load():
+    p = Profile({"groups": [{"uid": "a", "name": "Old", "volume": "1:7", "mute": "1:49", "assign": "1:0"}]})
+    assert (p.groups[0]["launch"], p.groups[0]["command"]) == ("", "")
+
+
+def test_pad_grid_is_validated_and_saved():
+    from midi_mixer.profile import Profile
+
+    raw = {"pad": {"note": 32, "colors": {"Y": 13, "X": 0, "Z": "nope"}}, "pad_animation": "pacman"}
+    p = Profile(raw)
+    assert p.pad["rows"] == 5 and p.pad["cols"] == 8 and p.pad["colors"] == {"Y": 13}
+    assert Profile(p.to_dict()).pad == p.pad and Profile(p.to_dict()).pad_animation == "pacman"
+    assert Profile({"pad": {"note": 120, "note_step": 8}}).pad is None   # rows would run past note 127
+    assert Profile({"pad": {"note": 32, "cols": 16, "channel": 2, "channel_step": 1}}).pad is None   # columns past channel 16
+    assert Profile().pad is None and "pad" not in Profile().to_dict()

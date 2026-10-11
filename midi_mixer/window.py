@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QScrollArea, QStackedWidget, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from .animations import ANIMATIONS, LIVE_ANIMATIONS
 from .audio import list_running_apps, set_mute, target_base_name
 from .autostart import is_autostart_enabled, set_autostart
 from .config import (
@@ -18,6 +19,7 @@ from .config import (
 from .constants import APP_NAME, NO_PORT_LABEL, PORT_POLL_MS
 from .engine import MixerEngine
 from .focus import XLIB_AVAILABLE, focused_app_name
+from .launcher import is_running, launch
 from .midi_utils import format_key, input_port_names, mapping_key, parse_cc_field
 from .theme import GREEN, dot_icon, make_app_icon
 from .widgets import GroupList, GroupRow, MappingRow, NoScrollComboBox, ProfileBar, VolumeOverlay
@@ -48,6 +50,7 @@ class MainWindow(QMainWindow):
         self.engine.stateChanged.connect(self._on_state_changed)
         self.engine.volumeChanged.connect(self._on_volume)
         self.engine.assignRequested.connect(self._on_assign_requested)
+        self.engine.launchRequested.connect(self._on_launch_requested)
         self.engine.learned.connect(self._on_learned)
         self.engine.learnEnded.connect(self._on_learn_ended)
         self.engine.errorOccurred.connect(self._on_error)
@@ -100,10 +103,19 @@ class MainWindow(QMainWindow):
         self.port_combo = NoScrollComboBox()
         self.port_combo.setToolTip("Port MIDI du contrôleur")
         self.port_combo.activated.connect(self._on_port_activated)
+        self.pad_label = QLabel("Pad")
+        self.pad_combo = NoScrollComboBox()
+        self.pad_combo.setToolTip("Animation affichée sur la grille de pads du contrôleur")
+        self.pad_combo.addItem("Aucune animation", "")
+        for animation in (*ANIMATIONS.values(), *LIVE_ANIMATIONS.values()):
+            self.pad_combo.addItem(animation.label, animation.name)
+        self.pad_combo.activated.connect(self._on_pad_animation_chosen)
         self.btn_refresh = QPushButton("Rafraîchir les applications")
         self.btn_refresh.clicked.connect(self._refresh_apps)
         top.addWidget(self.profile_bar)
         top.addWidget(self.port_combo, 1)
+        top.addWidget(self.pad_label)
+        top.addWidget(self.pad_combo)
         top.addWidget(self.btn_refresh)
         root.addLayout(top)
 
@@ -349,7 +361,7 @@ class MainWindow(QMainWindow):
         groups, invalid = [], []
         for row in self.group_rows:
             group = {"uid": row.uid, "name": row.name.text().strip(), "app": row.app.currentText().strip(),
-                     "color": row.color.currentText()}
+                     "command": row.command.text().strip()}
             for field, label, _prefix, _kind in row.fields_spec:
                 text = row.fields[field].text()
                 parsed = parse_cc_field(text) if text else None
@@ -433,7 +445,7 @@ class MainWindow(QMainWindow):
         return -1
 
     def _refresh_group_items(self):
-        """Keep the left-hand list in line with each group's name, app and LED color."""
+        """Keep the left-hand list in line with each group's name and app."""
         for i in range(self.group_list.count()):
             item = self.group_list.item(i)
             row = self._group_by_uid(item.data(Qt.UserRole))
@@ -442,8 +454,7 @@ class MainWindow(QMainWindow):
             name = row.name.text().strip() or f"Groupe {i + 1}"
             app = row.app.currentText().strip()
             item.setText(f"{name}\n{app or 'non assigné'}")
-            color = (self.profile.color_hex(row.color.currentText()) or GREEN) if app else "#5c6070"
-            item.setIcon(dot_icon(color))
+            item.setIcon(dot_icon(GREEN if app else "#5c6070"))
 
     @Slot(int)
     def _on_group_selected(self, index: int):
@@ -519,6 +530,35 @@ class MainWindow(QMainWindow):
         row.set_app(name)
         self._apply_live()
         self.overlay.show_notice(title, f"→ {name}")
+
+    @Slot(str)
+    def _on_launch_requested(self, uid: str):
+        """Launch button pressed on the controller: start the group's application unless it is already running."""
+        row = self._group_by_uid(uid)
+        if row is None:
+            return
+        title = row.name.text().strip() or "Groupe"
+        app, command = row.app.currentText().strip(), row.command.text().strip()
+        if app == "MASTER":
+            self.overlay.show_notice(title, "MASTER ne se lance pas")
+            return
+        if not app and not command:
+            self.overlay.show_notice(title, "Aucune application assignée")
+            return
+        pulse = self._ui_pulse()
+        if app and pulse is not None:
+            try:
+                if is_running(pulse, app):
+                    self.overlay.show_notice(title, f"{app} est déjà lancé")
+                    return
+            except Exception as e:
+                logger.error("Lecture audio impossible : %s", e)
+        ok, message = launch(app, command)
+        if ok:
+            self.overlay.show_notice(title, message)
+        else:                                   # long explanations do not fit the popup: short title + notification
+            self.overlay.show_notice(title, "Lancement impossible")
+            self._on_error(message)
 
     # -- learn -------------------------------------------------------------
 
@@ -708,6 +748,7 @@ class MainWindow(QMainWindow):
     def _load_profile_ui(self):
         """Show the active profile: title, mapping rows, group panels; hand its description to the engine."""
         self.engine.profile = self.profile
+        self._show_pad_animation()
         self._clear_rows()
         self.setWindowTitle(f"{APP_NAME} — {self.profile.name}")
         for key, app in self.profile.mappings.items():
@@ -719,12 +760,28 @@ class MainWindow(QMainWindow):
         if self.group_rows:
             self.group_list.setCurrentRow(0)
 
+    @Slot(int)
+    def _on_pad_animation_chosen(self, _index):
+        name = self.pad_combo.currentData() or ""
+        self.profile.pad_animation = name
+        self.engine.set_pad_animation(name)
+        self._save_profile()
+
+    def _show_pad_animation(self):
+        """Pad selector: only for controllers whose profile describes a pad grid."""
+        has_pad = bool(self.profile.pad)
+        self.pad_label.setVisible(has_pad)
+        self.pad_combo.setVisible(has_pad)
+        self.pad_combo.setCurrentIndex(max(0, self.pad_combo.findData(self.profile.pad_animation)))
+        self.engine.set_pad_animation(self.profile.pad_animation if has_pad else "")
+
     def _release_controller(self):
         """Give the sound back and switch the controller's LEDs off, then stop listening."""
         for g in list(self.engine.groups):
             if g["uid"] in self.engine.muted:
                 self._unmute(g["uid"], g.get("app", ""))
         self.engine.set_groups([])   # switches the group LEDs off
+        self.engine.release_pad()    # and the pad grid
         self.engine.stop()
 
     @Slot(str)

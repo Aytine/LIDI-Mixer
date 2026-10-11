@@ -12,7 +12,7 @@ from .midi_utils import mapping_key
 SCHEMA_VERSION = 1
 BUTTON_MESSAGES = ("note", "cc")      # do the buttons send notes or control changes?
 BUTTON_TRIGGERS = ("press", "any")    # "press": note_on / CC>0 ; "any": every message is a press (toggle buttons)
-GROUP_FIELDS = ("volume", "mute", "assign")
+GROUP_FIELDS = ("volume", "mute", "assign", "launch")   # MIDI controls of a group
 
 
 def _int(value, default, lo, hi):
@@ -58,6 +58,32 @@ def _normalize_spec(raw):
     }
 
 
+def _normalize_pad(raw):
+    """Where the pad grid sits (first pad = top-left, steps to the next column / row), or None without a grid.
+
+    Pad (row r, column c) is the note `note + r * note_step + c * note_col_step` on channel
+    `channel + c * channel_step`.
+    `colors` maps the animation color keys (see animations.py) to the LED value that lights them.
+    """
+    if not isinstance(raw, dict):
+        return None
+    pad = {"rows": _int(raw.get("rows"), 5, 1, 16), "cols": _int(raw.get("cols"), 8, 1, 16),
+           "channel": _int(raw.get("channel"), 1, 1, 16), "note": _int(raw.get("note"), None, 0, 127),
+           "channel_step": _int(raw.get("channel_step"), 1, -15, 15),
+           "note_step": _int(raw.get("note_step"), 1, -127, 127),
+           "note_col_step": _int(raw.get("note_col_step"), 0, -127, 127)}
+    if pad["note"] is None:
+        return None
+    last_channel = pad["channel"] + (pad["cols"] - 1) * pad["channel_step"]
+    notes = [pad["note"] + r * pad["note_step"] + c * pad["note_col_step"]
+             for r in (0, pad["rows"] - 1) for c in (0, pad["cols"] - 1)]
+    if not (1 <= last_channel <= 16 and all(0 <= n <= 127 for n in notes)):
+        return None
+    colors = raw.get("colors") if isinstance(raw.get("colors"), dict) else {}
+    pad["colors"] = {str(k): v for k, v in ((k, _int(v, None, 1, 127)) for k, v in colors.items()) if v is not None}
+    return pad
+
+
 class Profile:
     """A controller profile plus the user's settings for it. `Profile()` is a neutral profile."""
 
@@ -72,6 +98,8 @@ class Profile:
         self.buttons_message = buttons.get("message") if buttons.get("message") in BUTTON_MESSAGES else "note"
         self.button_trigger = buttons.get("trigger") if buttons.get("trigger") in BUTTON_TRIGGERS else "press"
         self.leds = _normalize_leds(raw.get("leds"))
+        self.pad = _normalize_pad(raw.get("pad"))                                  # LED grid for animations
+        self.pad_animation = str(raw.get("pad_animation") or "")                   # name in animations.ANIMATIONS
         self.template = {"count": _int(template.get("count"), 4, 0, 64)}
         for field in GROUP_FIELDS:
             self.template[field] = _normalize_spec(template.get(field))
@@ -109,17 +137,6 @@ class Profile:
     def matches_port(self, port: str) -> bool:
         return bool(self.port_hint) and self.port_hint in port.lower()
 
-    def color_velocity(self, name):
-        """Velocity/value that lights an Assign LED in color `name` (the plain 'on' value without a palette)."""
-        if not self.leds:
-            return None
-        spec = self.colors.get(name) or self.colors.get(self.default_color)
-        return spec["velocity"] if spec else self.leds["on"]
-
-    def color_hex(self, name):
-        spec = self.colors.get(name) or self.colors.get(self.default_color)
-        return spec["hex"] if spec else None
-
     # -- groups --------------------------------------------------------------
 
     def template_key(self, field: str, index: int) -> str:
@@ -136,8 +153,7 @@ class Profile:
         return mapping_key(channel, number) if 0 <= number <= 127 else ""
 
     def make_group(self, index: int, name: str = None) -> dict:
-        group = {"uid": uuid.uuid4().hex[:8], "name": name or f"Groupe {index + 1}", "app": "",
-                 "color": self.default_color or ""}
+        group = {"uid": uuid.uuid4().hex[:8], "name": name or f"Groupe {index + 1}", "app": "", "command": ""}
         for field in GROUP_FIELDS:
             group[field] = self.template_key(field, index)
         return group
@@ -159,12 +175,11 @@ class Profile:
         return group
 
     def _normalize_group(self, raw: dict) -> dict:
-        color = raw.get("color")
         return {
             "uid": str(raw.get("uid") or uuid.uuid4().hex[:8]),
             "name": str(raw.get("name") or ""),
             "app": str(raw.get("app") or ""),
-            "color": color if color in self.colors else (self.default_color or ""),
+            "command": str(raw.get("command") or ""),   # optional launch command; empty = find the app's launcher
             **{field: str(raw.get(field) or "") for field in GROUP_FIELDS},
         }
 
@@ -185,6 +200,9 @@ class Profile:
         }
         if self.leds:
             data["leds"] = self.leds
+        if self.pad:
+            data["pad"] = self.pad
+            data["pad_animation"] = self.pad_animation
         return data
 
     @classmethod

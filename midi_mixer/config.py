@@ -136,7 +136,15 @@ def list_profiles():
 def load_profile(pid: str):
     path = profile_path(pid)
     data = _read_json(path) if os.path.exists(path) else None
-    return Profile(data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    if "pad" not in data and data.get("port_hint"):
+        # Profiles saved before the pad grid existed: borrow it from the bundled template of the same controller.
+        for template in bundled_templates().values():
+            if template.get("port_hint") == data["port_hint"] and "pad" in template:
+                data = {**data, "pad": template["pad"]}
+                break
+    return Profile(data)
 
 
 def save_profile(pid: str, profile: Profile):

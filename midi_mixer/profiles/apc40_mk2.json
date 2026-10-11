@@ -20,6 +20,12 @@
       "Blanc":  {"velocity": 3,  "hex": "#ecf0f1"}
     }
   },
+  "pad": {
+    "rows": 5, "cols": 8,
+    "channel": 1, "channel_step": 0,
+    "note": 32, "note_step": -8, "note_col_step": 1,
+    "colors": {"Y": 13, "R": 5, "B": 45, "G": 21, "W": 3, "P": 57, "C": 37, "O": 9, "V": 53}
+  },
   "group_template": {
     "count": 8,
     "volume": {"number": 7,  "channel": 1, "channel_step": 1},

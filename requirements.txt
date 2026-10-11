@@ -3,3 +3,4 @@ mido
 python-rtmidi
 pulsectl
 python-xlib
+numpy

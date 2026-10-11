@@ -7,6 +7,7 @@ from midi_mixer import config
 from midi_mixer import window as window_module
 from midi_mixer.engine import MixerEngine
 from midi_mixer.window import MainWindow
+from conftest import FakePulse, FakeStream
 
 APC_PORT = "APC40 mkII:APC40 mkII MIDI 1 24:0"
 
@@ -157,7 +158,6 @@ def test_app_list_refreshes_only_when_it_changes(win, monkeypatch):
 @pytest.mark.parametrize("pick", [
     lambda w: w.port_combo,
     lambda w: w.profile_bar.combo,
-    lambda w: w.group_rows[0].color,
     lambda w: w.group_rows[0].app,
 ])
 def test_mouse_wheel_never_changes_a_combo_box(win, pick):
@@ -172,16 +172,14 @@ def test_mouse_wheel_never_changes_a_combo_box(win, pick):
 # ---------------------------------------------------------------- profiles
 
 def test_no_controller_knowledge_in_the_window_defaults(make_window):
-    """Without a known controller the app starts on the generic profile: no LED colors, unbound groups."""
+    """Without a known controller the app starts on the generic profile: unbound groups."""
     w = make_window()
     assert w.profile.name == "Mon contrôleur" and not w.profile.has_leds
     assert len(w.group_rows) == 4 and w.group_rows[0].fields["volume"].text() == ""
-    assert not w.group_rows[0].color.isVisibleTo(w.group_rows[0])   # no palette: no color selector
 
 
 def test_apc40_profile_is_used_when_the_controller_is_plugged_at_first_run(win):
     assert win.profile.name == "APC40 mkII" and win.windowTitle().endswith("APC40 mkII")
-    assert win.group_rows[0].color.isVisibleTo(win.group_rows[0])
     assert win.profile.mappings == {"14": "MASTER"}
 
 
@@ -316,3 +314,81 @@ def test_no_automatic_switch_while_the_mixer_runs_or_after_a_manual_stop(win, po
     win._user_stopped = True
     win._refresh_ports()
     assert win.profile_id != other
+
+
+# ------------------------------------------------------------- launch button
+
+@pytest.fixture
+def launch_env(win, monkeypatch):
+    """Record launches, notices and errors; the audio side sees whatever streams the test puts in `pulse`."""
+    env = type("Env", (), {})()
+    env.launched, env.notices, env.errors = [], [], []
+    env.pulse = FakePulse()
+    monkeypatch.setattr(window_module, "launch",
+                        lambda app, command: env.launched.append((app, command)) or (True, f"Lancement de {app}…"))
+    monkeypatch.setattr(win, "_ui_pulse", lambda: env.pulse)
+    monkeypatch.setattr(win.overlay, "show_notice", lambda title, text: env.notices.append((title, text)))
+    monkeypatch.setattr(win, "_on_error", env.errors.append)
+    env.win = win
+    return env
+
+
+def test_launch_button_starts_the_groups_app(launch_env):
+    win = launch_env.win
+    win.group_rows[0].set_app("Spotify")
+    win.engine.launchRequested.emit(win.group_rows[0].uid)
+    assert launch_env.launched == [("Spotify", "")]
+    assert launch_env.notices == [("Groupe 1", "Lancement de Spotify…")]
+
+
+def test_launch_button_does_not_start_an_app_that_is_already_playing(launch_env):
+    win = launch_env.win
+    launch_env.pulse.streams.append(FakeStream("Spotify"))
+    win.group_rows[0].set_app("Spotify")
+    win.engine.launchRequested.emit(win.group_rows[0].uid)
+    assert launch_env.launched == [] and launch_env.notices == [("Groupe 1", "Spotify est déjà lancé")]
+
+
+def test_launch_button_uses_the_explicit_command(launch_env):
+    win = launch_env.win
+    row = win.group_rows[0]
+    row.set_app("Spotify")
+    row.command.setText("flatpak run com.spotify.Client")
+    win._on_launch_requested(row.uid)
+    assert launch_env.launched == [("Spotify", "flatpak run com.spotify.Client")]
+
+
+def test_launch_button_with_only_a_command_and_no_assigned_app(launch_env):
+    win = launch_env.win
+    win.group_rows[0].command.setText("my-tool")
+    win._on_launch_requested(win.group_rows[0].uid)
+    assert launch_env.launched == [("", "my-tool")]
+
+
+def test_launch_button_explains_when_there_is_nothing_to_launch(launch_env):
+    win = launch_env.win
+    win._on_launch_requested(win.group_rows[0].uid)                       # no app, no command
+    win.group_rows[1].set_app("MASTER")
+    win._on_launch_requested(win.group_rows[1].uid)
+    assert launch_env.launched == []
+    assert [t for _title, t in launch_env.notices] == ["Aucune application assignée", "MASTER ne se lance pas"]
+
+
+def test_launch_failure_shows_a_short_notice_and_the_reason_as_a_notification(launch_env, monkeypatch):
+    win = launch_env.win
+    monkeypatch.setattr(window_module, "launch", lambda app, command: (False, "Aucun lanceur trouvé pour « X »"))
+    win.group_rows[0].set_app("X")
+    win._on_launch_requested(win.group_rows[0].uid)
+    assert launch_env.notices == [("Groupe 1", "Lancement impossible")]
+    assert launch_env.errors == ["Aucun lanceur trouvé pour « X »"]
+
+
+def test_launch_button_and_command_are_saved_with_the_group(win):
+    row = win.group_rows[0]
+    win._on_learned((row, "launch"), 1, 40)
+    assert row.fields["launch"].text() == "Note 40 (ch 1)" and win.engine.groups[0]["launch"] == "1:40"
+    row.command.setText("my-tool --x")
+    row.changed.emit()
+    saved = config.load_profile(win.profile_id).groups[0]
+    assert (saved["launch"], saved["command"]) == ("1:40", "my-tool --x")
+    assert win.group_rows[0].kind_for("launch") == ("Note", "note")

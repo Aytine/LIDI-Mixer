@@ -12,12 +12,17 @@ controller... and you can switch between them.
 - **Groups**: one strip = one application + its fader, Mute button and Assign button. Pressing Assign on the
   controller gives the group the application that currently has the focus (X11); you can also pick the
   application from a dropdown.
+- **Launch button**: each group can have a MIDI button that starts the group's application (found through its
+  `.desktop` launcher, Flatpak and Snap included, or through an optional command you set on the group). Nothing
+  is started if the application is already running (it has an audio stream). Pick the button with *Learn*.
 - **Direct mappings**: a CC controls one application (or MASTER) without going through a group.
 - **Learn mode**: click *Learn*, move a fader / press a button, done.
 - **Profiles**: one per controller, switch from the window or the tray icon; import / export to share them.
   The app switches by itself when you plug another controller.
-- **LEDs** (when the controller supports it): Mute LED lit while muted, Assign LED lit, in a per-group color,
-  while an application is assigned.
+- **LEDs** (when the controller supports it): Mute LED lit while muted. The pads are left free for animations.
+- **Pad animations**: if the profile describes a pad grid (APC40 mkII: 8 x 5), the *Pad* selector plays a pixel-art
+  animation on it in a loop: Pac-Man, spiral, rain, heart, wave, bouncing ball. They are defined in
+  `midi_mixer/animations.py` (a frame is 5 strings of 8 characters, one letter per color).
 - Tray icon, closes to the tray, optional launch at session start, styled volume popup, live changes (no
   restart needed), the list of running audio apps refreshes by itself.
 
@@ -65,11 +70,17 @@ with *Learn*, then export it (or write the file by hand):
     "default_color": "Green",
     "colors": { "Green": {"velocity": 21, "hex": "#2ecc71"}, "Red": {"velocity": 5, "hex": "#e74c3c"} }
   },
+  "pad": {                           // optional pad grid for animations: the pad at row r (0 = top), column c is
+    "rows": 5, "cols": 8,            //   note (note + r*note_step + c*note_col_step) on channel (channel + c*channel_step)
+    "channel": 1, "channel_step": 0, "note": 32, "note_step": -8, "note_col_step": 1,
+    "colors": {"Y": 13, "R": 5}      // animation color letter -> LED velocity (see animations.py)
+  },
   "group_template": {                // where group N's controls are; new groups follow it
     "count": 8,
     "volume": {"number": 7,  "channel": 1, "channel_step": 1},   // group i: channel 1+i, CC 7
     "mute":   {"number": 49, "channel": 1, "channel_step": 1},
-    "assign": {"number": 0,  "channel": 1, "channel_step": 1}    // also "number_step"; omit "channel" = any channel
+    "assign": {"number": 0,  "channel": 1, "channel_step": 1},   // also "number_step"; omit "channel" = any channel
+    "launch": {"number": 40, "channel": 1, "channel_step": 1}    // optional, like every control (none = use Learn)
   },
   "mappings": {"14": "MASTER"},      // direct CC mappings: "cc" or "channel:cc" -> application
   "groups": []                       // your groups (filled by the app)
@@ -85,6 +96,7 @@ the focused-application lookup for Assign needs X11.
 main.py                 entry point (single instance, Qt application)
 midi_mixer/
   constants.py          app constants (nothing controller specific)
+  animations.py         pad grid animations (frames)                             (pure, no Qt)
   profile.py            Profile model: what a controller is and how it behaves   (pure, no Qt)
   profiles/*.json       bundled profile templates (APC40 mkII, generic)
   config.py             settings + profile files, import/export, migration       (pure, no Qt)
