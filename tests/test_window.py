@@ -392,3 +392,22 @@ def test_launch_button_and_command_are_saved_with_the_group(win):
     saved = config.load_profile(win.profile_id).groups[0]
     assert (saved["launch"], saved["command"]) == ("1:40", "my-tool --x")
     assert win.group_rows[0].kind_for("launch") == ("Note", "note")
+
+
+def test_tray_menu_changes_the_pad_animation_like_the_selector(win):
+    actions = {a.text(): a for a in win.tray_pad.actions()}
+    assert "Aucune animation" in actions and "Pac-Man" in actions and "Spectre audio (néon)" in actions
+    actions["Pac-Man"].trigger()
+    assert win.engine.pad_animation == "pacman" and win.profile.pad_animation == "pacman"
+    assert win.pad_combo.currentData() == "pacman"
+    assert [a.text() for a in actions.values() if a.isChecked()] == ["Pac-Man"]
+    win.pad_combo.setCurrentIndex(win.pad_combo.findData("heart"))
+    win.pad_combo.activated.emit(win.pad_combo.currentIndex())
+    assert [a.text() for a in actions.values() if a.isChecked()] == ["Cœur"]
+    actions["Aucune animation"].trigger()
+    assert win.engine.pad_animation == ""
+
+
+def test_tray_pad_menu_is_hidden_without_a_pad_grid(make_window):
+    w = make_window()          # generic profile: no pad grid
+    assert not w.tray_pad.menuAction().isVisible()

@@ -221,9 +221,19 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self._quit)
         self.tray_profiles = QMenu("Profil", menu)
         self._profile_actions = None
+        self.tray_pad = QMenu("Animation du pad", menu)
+        self._pad_actions = QActionGroup(self)
+        for label, name in [("Aucune animation", "")] + [(a.label, a.name) for a in (
+                *ANIMATIONS.values(), *LIVE_ANIMATIONS.values())]:
+            action = self.tray_pad.addAction(label)
+            action.setData(name)
+            action.setCheckable(True)
+            self._pad_actions.addAction(action)
+            action.triggered.connect(lambda _checked=False, n=name: self._choose_pad_animation(n))
         menu.addAction(act_open)
         menu.addAction(self.act_toggle)
         menu.addMenu(self.tray_profiles)
+        menu.addMenu(self.tray_pad)
         menu.addSeparator()
         menu.addAction(self.act_autostart)
         menu.addSeparator()
@@ -762,18 +772,26 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_pad_animation_chosen(self, _index):
-        name = self.pad_combo.currentData() or ""
+        self._choose_pad_animation(self.pad_combo.currentData() or "")
+
+    def _choose_pad_animation(self, name: str):
+        """Play animation `name` ("" = none) on the pads, from the window or the tray menu; remember the choice."""
         self.profile.pad_animation = name
         self.engine.set_pad_animation(name)
+        self._show_pad_animation(apply=False)
         self._save_profile()
 
-    def _show_pad_animation(self):
-        """Pad selector: only for controllers whose profile describes a pad grid."""
+    def _show_pad_animation(self, apply: bool = True):
+        """Pad selectors (window and tray): only for controllers whose profile describes a pad grid."""
         has_pad = bool(self.profile.pad)
         self.pad_label.setVisible(has_pad)
         self.pad_combo.setVisible(has_pad)
+        self.tray_pad.menuAction().setVisible(has_pad)
         self.pad_combo.setCurrentIndex(max(0, self.pad_combo.findData(self.profile.pad_animation)))
-        self.engine.set_pad_animation(self.profile.pad_animation if has_pad else "")
+        for action in self._pad_actions.actions():
+            action.setChecked(action.data() == self.profile.pad_animation)
+        if apply:
+            self.engine.set_pad_animation(self.profile.pad_animation if has_pad else "")
 
     def _release_controller(self):
         """Give the sound back and switch the controller's LEDs off, then stop listening."""

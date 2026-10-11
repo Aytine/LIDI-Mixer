@@ -182,5 +182,6 @@ ANIMATIONS = {a.name: a for a in (_pacman(), _spiral(), _rain(), _heart(), _wave
 LIVE_ANIMATIONS = {a.name: a for a in (
     LiveAnimation("spectrum", "Spectre audio", 0.04, "spectrum"),
     LiveAnimation("spectrum_ocean", "Spectre audio (océan)", 0.04, "spectrum", colors="BBCCW"),
+    LiveAnimation("spectrum_neon", "Spectre audio (néon)", 0.04, "spectrum", colors="VVPPW"),
     LiveAnimation("vu", "Niveaux des tranches", 0.04, "vu"),
 )}
